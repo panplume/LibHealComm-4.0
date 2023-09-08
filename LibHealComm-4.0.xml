@@ -2,4 +2,12 @@
 ..\FrameXML\UI.xsd">
 	<Script file="ChatThrottleLib.lua"/>
 	<Script file="LibHealComm-4.0.lua"/>
+	<!-- Endless TBC spell tooltip scanning -->
+	<GameTooltip name="MyScanningTooltip" inherits="GameTooltipTemplate">
+	  <Scripts>
+	    <Onload>
+	      self:SetOwner(WorldFrame, "ANCHOR_NONE");
+	    </Onload>
+	  </Scripts>
+	</GameTooltip>
 </Ui>
