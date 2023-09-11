@@ -559,7 +559,87 @@ end
 local function avg(a, b)
 	return (a + b) / 2
 end
-	
+
+--Endless TBC beta changes spell value, parse the tooltip to get them
+--look for a line in the tooltip with 2+ numbers, return the average
+--should work with translation, hopefully
+--eg. Prayer of Healing:
+-- blabla within 36y for MIN to MAX.
+--Renew:
+-- blabla AMOUNT over TIME sec.
+--typical tooltip:
+--  Flash of Light
+--  115 Mana
+--  40 yd range
+--  Heals a friendly target for 325 to 363.
+--basic understanding of pattern matching
+-- [] set of character, ^ negate, %d numbers (^%d everything but numbers)
+-- ...+ one or more of ...
+-- ...* zero or more of ...
+-- (...) return ... (starting with arg3, arg4, etc)
+local directHealPattern = "[^%d]+(%d+)[^%d]+(%d+)[^%d]*"
+--Renew:
+--Heals the target for 510 over 15 sec.
+local HoTPattern = "[^%d]+(%d+)[^%d]+%d+[^%d]*"
+--Regrowth :
+--Heals a friendly target for 93 to 107 and another 98 over 21 sec.
+local directRegrowthPattern = "[^%d]+(%d+)[^%d]+(%d+)[^%d]+%d+[^%d]+%d+[^%d]*"
+local HoTRegrowthPattern = "[^%d]+%d+[^%d]+%d+[^%d]+(%d+)[^%d]+%d+[^%d]*"
+--Chain Heal:
+--Heals the friendly target for 833 to 950, then jumps to heal additional nearby targets.  If cast on a party member, the heal will only jump to other party members.  Each jump reduces the effectiveness of the heal by 50%.  Heals 3 total targets.
+local chainHealPattern = directRegrowthPattern
+--tranquility:
+--Heals all nearby group members for 365 every 2 seconds for 8 sec.  Druid must channel to maintain the spell.
+local HoTTranqPattern = "[^%d]+(%d+)[^%d]+%d+[^%d]+%d+[^%d]*"
+--Prayer of Healing:
+--A powerful prayer heals party members within 30 yards for 312 to 333.
+local directPoHPattern = "[^%d]+%d+[^%d]+(%d+)[^%d]+(%d+)[^%d]*"
+--no pattern for lifebloom, hard coded
+
+--pattern gives 1 or 2 number (1 for HoT)
+local function EnumerateTooltipLines_helper(spellId, pattern, ...)
+  for i = 3, select("#", ...) - 2 do
+    local region = select(i, ...)
+    if region and region:GetObjectType() == "FontString" then
+      local text = region:GetText() -- string or nil
+      if text then
+	--print(text)
+	start, stop, v1, v2 = string.find(text, pattern)
+	if start ~= nil then
+	  if v2 then
+	    return avg(v1, v2)
+	  else
+	    return v1 --Hot
+	  end
+	end
+      end
+    end
+  end
+  print("LHC4: failed processing spell "..spellId.." with "..pattern)
+  return 0
+end
+
+local function tooltipScanner(spellId, pattern)
+  LHCScanningTooltip:ClearLines()
+  LHCScanningTooltip:SetSpellByID(spellId)
+
+  return EnumerateTooltipLines_helper(spellId, pattern, LHCScanningTooltip:GetRegions())
+end
+
+--fill the average list after initialization of spellData with level and ids
+local function fillAverages(data, spells, pattern)
+  for _, s in ipairs( spells ) do
+    local averages = {}
+    for i = 1, #data[s].spellIds do
+      if data[s].levels[i] <= playerLevel then
+	--spell must exist in spellbook (will update on learning spell)
+	table.insert(averages, tooltipScanner(data[s].spellIds[i], pattern))
+      end
+    end
+    data[s].averages = averages
+  end
+end
+
 --[[
 	What the different callbacks do:
 	
@@ -603,12 +683,12 @@ if( playerClass == "DRUID" ) then
 		-- Rejuvenation
 		local Rejuvenation = GetSpellInfo(774)
 		hotData[Rejuvenation] = {interval = 3,
-					 levels = {4, 10, 16, 22, 28, 34, 40, 46, 52, 58, 60, 63, 69}, averages = {32, 56, 116, 180, 244, 304, 388, 488, 608, 756, 888, 932, 1060}}
+					 levels = {4, 10, 16, 22, 28, 34, 40, 46, 52, 58, 60, 63, 69}, averages = {32, 56, 116, 180, 244, 304, 388, 488, 608, 756, 888, 932, 1060}, spellIds = {774, 1058, 1430, 2090, 2091, 3627, 8910, 9839, 9840, 9841, 25299, 26981, 26982}}
 		-- Regrowth
 		local Regrowth = GetSpellInfo(8936)
 		--TODO: check coeff
 		hotData[Regrowth] = {interval = 3, ticks = 7, coeff = 1.316,
-				     levels = {12, 18, 24, 30, 36, 42, 48, 54, 60, 65}, averages = {98, 175, 259, 343, 427, 546, 686, 861, 1064, 1274}}
+				     levels = {12, 18, 24, 30, 36, 42, 48, 54, 60, 65}, averages = {98, 175, 259, 343, 427, 546, 686, 861, 1064, 1274}, spellIds = {8936, 8938, 8939, 8940, 8941, 9750, 9856, 9857, 9858, 26980}}
 		-- Lifebloom
 		local Lifebloom = GetSpellInfo(33763)
 		hotData[Lifebloom] = {interval = 1, ticks = 7, coeff = 0.518, dhCoeff = 0.3429, levels = {64}, averages = {273}, bomb = {600}}
@@ -617,15 +697,21 @@ if( playerClass == "DRUID" ) then
 		spellData[Regrowth] = {coeff = 0.2867,
 			levels = hotData[Regrowth].levels,
 			averages = {avg(93, 107), avg(176, 201), avg(255, 290), avg(336, 378), avg(425, 478), avg(534, 599), avg(672, 751), avg(839, 935), avg(1037, 1153), avg(1253, 1394)},
-			increase = {122, 155, 173, 180, 180, 178, 169, 156, 136, 115, 97, 23}}
+			increase = {122, 155, 173, 180, 180, 178, 169, 156, 136, 115, 97, 23}, spellIds = hotData[Regrowth].spellIds}
 		-- Healing Touch
 		local HealingTouch = GetSpellInfo(5185)
 		spellData[HealingTouch] = {
 			levels = {1, 8, 14, 20, 26, 32, 38, 44, 50, 56, 60, 62, 69},
-			averages = {avg(40, 55), avg(94, 119), avg(204, 253), avg(376, 459), avg(589, 712), avg(762, 914), avg(958, 1143), avg(1225, 1453), avg(1545, 1826), avg(1923, 2263), avg(2303, 2714), avg(2401, 2827), avg(2715, 3206)}}
+			averages = {avg(40, 55), avg(94, 119), avg(204, 253), avg(376, 459), avg(589, 712), avg(762, 914), avg(958, 1143), avg(1225, 1453), avg(1545, 1826), avg(1923, 2263), avg(2303, 2714), avg(2401, 2827), avg(2715, 3206)}, spellIds = {5185, 5186, 5187, 5188, 5189, 6778, 8903, 9758, 9888, 9889, 25297, 26978, 26979}}
 		-- Tranquility
 		local Tranquility = GetSpellInfo(740)
-		spellData[Tranquility] = {coeff = 1.144681, ticks = 4, levels = {30, 40, 50, 60, 70}, averages = {364, 530, 785, 1119, 1518}}
+		spellData[Tranquility] = {coeff = 1.144681, ticks = 4, levels = {30, 40, 50, 60, 70}, averages = {364, 530, 785, 1119, 1518}, spellIds = {740, 8918, 9862, 9863, 26983}}
+		
+		fillAverages(spellData, {Tranquility}, HoTTranqPattern)
+		fillAverages(spellData, {HealingTouch}, directHealPattern)
+		fillAverages(hotData, {Rejuvenation}, HoTPattern)
+		fillAverages(hotData, {Regrowth}, HoTRegrowthPattern)
+		fillAverages(spellData, {Regrowth}, directRegrowthPattern)
 	
 		-- Talent data, these are filled in later and modified on talent changes
 		-- Gift of Nature (Add)
@@ -670,8 +756,8 @@ if( playerClass == "DRUID" ) then
 			if( spellName == Tranquility ) then
 				local targets = compressGUID[playerGUID]
 				local playerGroup = guidToGroup[playerGUID]
-				
 				for groupGUID, id in pairs(guidToGroup) do
+
 					if( id == playerGroup and playerGUID ~= groupGUID and not UnitHasVehicleUI(guidToUnit[groupID]) and IsSpellInRange(Innervate, guidToUnit[groupGUID]) == 1 ) then
 						targets = targets .. "," .. compressGUID[groupGUID]
 					end
@@ -816,8 +902,8 @@ if( playerClass == "DRUID" ) then
 					healAmount = healAmount + 100
 				end
 	
-				--Endless beta R1-4: 1/1.5/2/2.5, R5-13:3
-				local castTime = rank > 4 and 3 or rank == 4 and 2.5 or rank == 3 and 2 or rank == 2 and 1.5 or 1
+				--Endless beta R1-4: 1.5/2/2.5/3, R5-13:3.5
+				local castTime = rank > 4 and 3.5 or rank == 4 and 3 or rank == 3 and 2.5 or rank == 2 and 2 or 1.5
 				spellPower = spellPower * (((castTime / 3.5)) + talentData[EmpoweredTouch].current)
 				
 			-- Tranquility
@@ -853,13 +939,13 @@ if( playerClass == "PALADIN" ) then
 		spellData[HolyLight] = {coeff = 2.5 / 3.5,
 			levels = {1, 6, 14, 22, 30, 38, 46, 54, 60, 62, 70},
 			averages = {avg(42, 51), avg(81, 96), avg(167, 196), avg(322, 368), avg(506, 569), avg(717, 799), avg(968, 1076), avg(1272, 1414), avg(1619, 1799), avg(1773, 1971), avg(2196, 2446)},
-			increase = {63, 81, 112, 139, 155, 159, 156, 135, 116, 115, 70, 52, 0}}
+			increase = {63, 81, 112, 139, 155, 159, 156, 135, 116, 115, 70, 52, 0}, spellIds = {635, 639, 647, 1026, 1042, 3472, 10328, 10329, 25292, 27135, 27136}}
 		-- Flash of Light
 		local FlashofLight = GetSpellInfo(19750)
 		spellData[FlashofLight] = {coeff = 1.5 / 3.5,
 			levels = {20, 26, 34, 42, 50, 58, 66},
 			averages = {avg(67, 77), avg(102, 117), avg(153, 171), avg(206, 231), avg(278, 310), avg(356, 396), avg(458, 513)},
-			increase = {60, 70, 73, 72, 66, 57, 42, 20, 3}}
+			increase = {60, 70, 73, 72, 66, 57, 42, 20, 3}, spellIds = {19750, 19939, 19940, 19941, 19942, 19943, 27137}}
 		
 		-- Talent data
 		-- Need to figure out a way of supporting +6% healing from imp devo aura, might not be able to
@@ -944,33 +1030,36 @@ if( playerClass == "PRIEST" ) then
 	LoadClassData = function()
 		-- Hot data
 		local Renew = GetSpellInfo(139)
-		hotData[Renew] = {coeff = 1, interval = 3, ticks = 5, levels = {8, 14, 20, 26, 32, 38, 44, 50, 56, 60, 65, 70}, averages = {45, 100, 175, 245, 315, 400, 510, 650, 810, 970, 1010, 1110}}
-		
+		hotData[Renew] = {coeff = 1, interval = 3, ticks = 5, levels = {8, 14, 20, 26, 32, 38, 44, 50, 56, 60, 65, 70}, averages = {45, 100, 175, 245, 315, 400, 510, 650, 810, 970, 1010, 1110}, spellIds = {139, 6074, 6075, 6076, 6077, 6078, 10927, 10928, 10929, 25315, 25221, 25222}}
 		-- Spell data
 		-- Greater Heal
 		local GreaterHeal = GetSpellInfo(2060)
 		spellData[GreaterHeal] = {coeff = 3 / 3.5, levels = {40, 46, 52, 58, 60, 63, 68}, increase = {204, 197, 184, 165, 162, 142, 111},
-					  averages = {avg(924, 1039), avg(1178, 1318), avg(1470, 1642), avg(1835, 2044), avg(2006, 2235), avg(2107, 2444), avg(2414, 2803)}}
+					  averages = {avg(924, 1039), avg(1178, 1318), avg(1470, 1642), avg(1835, 2044), avg(2006, 2235), avg(2107, 2444), avg(2414, 2803)}, spellIds = {2060, 10963, 10964, 10965, 25314, 25210, 25213}}
 		-- Prayer of Healing
+		--TODO: code seems to handle aoe as hot???
 		local PrayerofHealing = GetSpellInfo(596)
 		spellData[PrayerofHealing] = {coeff = 0.2798, levels = {30, 40, 50, 60, 60, 68}, increase = {65, 64, 60, 48, 50, 33, 18},
-					     averages = {avg(312, 333), avg(458, 487), avg(675, 713), avg(960, 1013), avg(1019, 1076), avg(1251, 1322)}}
+					      averages = {avg(312, 333), avg(458, 487), avg(675, 713), avg(960, 1013), avg(1019, 1076), avg(1251, 1322)}, spellIds = {596, 996, 10960, 10961, 25316, 25308}}
 		-- Flash Heal
 		local FlashHeal = GetSpellInfo(2061)
 		spellData[FlashHeal] = {coeff = 1.5 / 3.5, levels = {20, 26, 32, 38, 44, 52, 58, 61, 67}, increase = {114, 118, 120, 117, 118, 111, 100, 89, 67, 56, 9},
-				       averages = {avg(202, 247), avg(269, 325), avg(339, 406), avg(414, 492), avg(534, 633), avg(662, 783), avg(833, 979), avg(931, 1078), avg(1116, 1295)}}
+					averages = {avg(202, 247), avg(269, 325), avg(339, 406), avg(414, 492), avg(534, 633), avg(662, 783), avg(833, 979), avg(931, 1078), avg(1116, 1295)}, spellIds = {2061, 9472, 9473, 9474, 10915, 10916, 10917, 25233, 25235}}
 		-- Binding Heal
 		local BindingHeal = GetSpellInfo(32546)
 		spellData[BindingHeal] = {coeff = 1.5 / 3.5, levels = {64}, 
-					  averages = {avg(1053, 1350)}}
+					  averages = {avg(1053, 1350)}, spellIds = {32546}}
 		-- Heal
 		local Heal = GetSpellInfo(2054)
 		spellData[Heal] = {coeff = 3 / 3.5, levels = {16, 22, 28, 34},
-				  averages = {avg(307, 353), avg(445, 507), avg(586, 662), avg(734, 827)}}
+				  averages = {avg(307, 353), avg(445, 507), avg(586, 662), avg(734, 827)}, spellIds = {2054, 2055, 6063, 6064}}
 		-- Lesser Heal
 		local LesserHeal = GetSpellInfo(2050)
 		spellData[LesserHeal] = {levels = {1, 4, 10},
-					averages = {avg(47, 58), avg(76, 91), avg(143, 165)}}
+					averages = {avg(47, 58), avg(76, 91), avg(143, 165)}, spellIds = {2050, 2052, 2053}}
+		fillAverages(hotData, {Renew}, HoTPattern )
+		fillAverages(spellData, {PrayerofHealing}, directPoHPattern )
+		fillAverages(spellData, {GreaterHeal, FlashHeal, BindingHeal, Heal, LesserHeal}, directHealPattern )
 					
 		-- Talent data
 		-- Spiritual Healing (Add)
@@ -992,6 +1081,7 @@ if( playerClass == "PRIEST" ) then
 				local group = guidToGroup[guid]
 				
 				for groupGUID, id in pairs(guidToGroup) do
+
 					local unit = guidToUnit[groupGUID]
 					if( id == group and guid ~= groupGUID and UnitIsVisible(unit) and not UnitHasVehicleUI(unit) ) then
 						targets = targets .. "," .. compressGUID[groupGUID]
@@ -1083,17 +1173,19 @@ if( playerClass == "SHAMAN" ) then
 		-- Chain Heal
 		local ChainHeal = GetSpellInfo(1064)
 		spellData[ChainHeal] = {coeff = 2.5 / 3.5, levels = {40, 46, 54, 61, 68}, increase = {100, 95, 85, 72, 45, 22, 0},
-					averages = {avg(332, 381), avg(419, 479), avg(567, 646), avg(624, 710), avg(833, 950)}}
+					averages = {avg(332, 381), avg(419, 479), avg(567, 646), avg(624, 710), avg(833, 950)}, spellIds = {1064, 10622, 10623, 25422, 25423}}
 		-- Healing Wave
 		local HealingWave = GetSpellInfo(331)
 		spellData[HealingWave] = {levels = {1, 6, 12, 18, 24, 32, 40, 48, 56, 60, 63, 70, 75, 80},
 					  averages = {avg(36, 47), avg(69, 83), avg(136, 163), avg(279, 328), avg(389, 454), avg(552, 639), avg(759, 874), avg(1040, 1191), avg(1394, 1589), avg(1647, 1878), avg(1756, 2001), avg(2134, 2436)},
-			increase = {55, 74, 102, 142, 151, 158, 156, 150, 132, 110, 107, 71, 40, 0}}
+			increase = {55, 74, 102, 142, 151, 158, 156, 150, 132, 110, 107, 71, 40, 0}, spellIds = {331, 332, 547, 913, 939, 959, 8005, 10395, 10396, 25357, 25391, 25396}}
 		-- Lesser Healing Wave
 		local LesserHealingWave = GetSpellInfo(8004)
 		spellData[LesserHealingWave] = {coeff = 1.5 / 3.5, levels = {20, 28, 36, 44, 52, 60, 66, 72, 77}, increase = {102, 109, 110, 108, 100, 84, 58, 40, 18},
-						averages = {avg(170, 195), avg(257, 292), avg(349, 394), avg(473, 529), avg(649, 723), avg(853, 949), avg(1051, 1198)}}
-		
+						averages = {avg(170, 195), avg(257, 292), avg(349, 394), avg(473, 529), avg(649, 723), avg(853, 949), avg(1051, 1198)}, spellIds = {8004, 8008, 8010, 10466, 10467, 10468, 25420}}
+
+		fillAverages(spellData, {ChainHeal}, chainHealPattern)
+		fillAverages(spellData, {HealingWave, LesserHealingWave}, directHealPattern)
 		-- Talent data
 		-- Improved Chain Heal (Multi)
 		local ImpChainHeal = GetSpellInfo(30872)
@@ -1379,6 +1471,12 @@ function HealComm:ZONE_CHANGED_NEW_AREA()
 	end
 
 	instanceType = type
+end
+
+--Endless TBC
+--scan new (all) spell tooltip for my class
+function HealComm:LEARNED_SPELL_IN_TAB()
+  self:onInitClassData()
 end
 
 local alreadyAdded = {}
@@ -2411,32 +2509,30 @@ function HealComm:PLAYER_ALIVE()
 	self.eventFrame:UnregisterEvent("PLAYER_ALIVE")
 end
 
+--Endless TBC reset class data when learning new spell
+--(scanning tooltip from spellbook)
+function HealComm:onInitClassData()
+  print("LHC4: learning class data")
+  table.wipe(spellData)
+  table.wipe(hotData)
+  table.wipe(itemSetsData)
+  table.wipe(talentData)
+  table.wipe(averageHeal)
+
+  -- Load all of the classes formulas and such
+  LoadClassData()
+	
+  -- Setup the metatables for average healing
+  for spell in pairs(spellData) do
+    averageHeal[spell] = setmetatable({spell = spell}, self.averageHealMT)
+  end
+end
+
 -- Initialize the library
 function HealComm:OnInitialize()
 	-- If another instance already loaded then the tables should be wiped to prevent old data from persisting
 	-- in case of a spell being removed later on, only can happen if a newer LoD version is loaded
-	table.wipe(spellData)
-	table.wipe(hotData)
-	table.wipe(itemSetsData)
-	table.wipe(talentData)
-	table.wipe(averageHeal)
-
-	-- Load all of the classes formulas and such
-	LoadClassData()
-	
-	-- Setup the metatables for average healing
-	for spell in pairs(spellData) do
-		averageHeal[spell] = setmetatable({spell = spell}, self.averageHealMT)
-	end
-	
-	-- Cache glyphs initially
-    for id=1, GetNumGlyphSockets() do
-		local enabled, _, glyphID = GetGlyphSocketInfo(id)
-		if( enabled and glyphID ) then
-			glyphCache[glyphID] = true
-			glyphCache[id] = glyphID
-		end
-	end
+	self:onInitClassData()
 	
 	self:PLAYER_EQUIPMENT_CHANGED()
 	
@@ -2471,6 +2567,9 @@ function HealComm:OnInitialize()
 	self.eventFrame:RegisterEvent("GLYPH_REMOVED")
 	self.eventFrame:RegisterEvent("GLYPH_UPDATED")
 	self.eventFrame:RegisterEvent("UNIT_AURA")
+	--Endless TBC
+	--spell change/learn in spellbook,update class data to parse tooltip
+	self.eventFrame:RegisterEvent("LEARNED_SPELL_IN_TAB")
 	
 	if( self.initialized ) then return end
 	self.initialized = true

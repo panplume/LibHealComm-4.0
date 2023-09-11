@@ -4,4 +4,4 @@
 
 First working modification to have it (incoming health prediction) working for Endless TBC.
 
-TODO: Druid Healing Touch not showing up in some condition and priest prediction not accurate.
+TODO: Druid Healing Touch not showing up in some condition (rank 5+). Tranquility and Prayer of Healing not showing (may miss code to support this).
